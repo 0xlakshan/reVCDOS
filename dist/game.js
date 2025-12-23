@@ -8,7 +8,7 @@ var wasm_content;
 const params = new URLSearchParams(window.location.search);
 
 // Base URLs
-const replaceFetch = {from: "https://cdn.dos.zone/vcsky/", to: "./vcsky/"}
+const replaceFetch = {from: "https://cdn.dos.zone/vcsky/", to: "/vcsky/"}
 const replaceBR = "/vcbr/"
 
 const autoFullScreen = true;
