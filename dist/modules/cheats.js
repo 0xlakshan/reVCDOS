@@ -242,6 +242,74 @@
         ::-webkit-scrollbar-thumb:hover {
             background: #ff00ff;
         }
+
+        /* Toggle Switch */
+        .switch-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 8px 10px;
+            border: 1px solid #333;
+            margin-bottom: 4px;
+        }
+        .switch-label {
+            font-size: 12px;
+            color: #fff;
+            text-transform: uppercase;
+        }
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 34px;
+            height: 18px;
+        }
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #333;
+            transition: .4s;
+            border-radius: 18px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 12px;
+            width: 12px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: #ff00ff;
+        }
+        input:checked + .slider:before {
+            transform: translateX(16px);
+        }
+        
+        /* Money Button */
+        .money-btn {
+            width: 100%;
+            background: rgba(255, 215, 0, 0.1) !important;
+            border: 1px solid #ffd700 !important;
+            color: #ffd700 !important;
+            font-weight: bold;
+            margin-top: 4px;
+        }
+        .money-btn:active {
+            background: rgba(255, 215, 0, 0.3) !important;
+        }
     `;
     document.head.appendChild(style);
 
@@ -322,16 +390,31 @@
         </div>
 
         <div class="ce-section">
-            <div class="ce-label">AirBreak (RShift toggle)</div>
-            <div style="display: flex; gap: 4px;">
-                <input type="text" id="ce-health-addr" placeholder="Health addr (0x...)" style="flex: 1;">
-                <button id="ce-setup-airbreak">Setup</button>
+            <div class="ce-label">Quick Actions</div>
+            
+            <div class="switch-container">
+                <span class="switch-label">AirBreak (RShift)</span>
+                <label class="switch">
+                    <input type="checkbox" id="ce-toggle-airbreak">
+                    <span class="slider"></span>
+                </label>
             </div>
-            <div style="display: flex; gap: 4px; margin-top: 4px;">
-                <span style="font-size: 10px; color: #888;">Speed:</span>
+            
+            <div class="switch-container">
+                <span class="switch-label">GodMode (Inf HP)</span>
+                <label class="switch">
+                    <input type="checkbox" id="ce-toggle-godmode">
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <button id="ce-add-money" class="money-btn">+$9999999 MONEY</button>
+            
+            <div style="display: flex; gap: 4px; margin-top: 4px; align-items: center;">
+                <span style="font-size: 10px; color: #888;">Fly Speed:</span>
                 <input type="number" id="ce-fly-speed" value="2.0" step="0.5" min="0.1" max="50" style="width: 60px;">
             </div>
-            <div id="ce-airbreak-status" style="font-size: 10px; color: #888;">Not configured</div>
+            <div id="ce-airbreak-status" style="font-size: 10px; color: #888;">Ready</div>
             <div id="ce-pos-display" style="font-size: 9px; color: #666;"></div>
         </div>
 
@@ -428,8 +511,9 @@
     let lastBuffer = null; // Track buffer for detachment detection
     
     // AirBreak state
-    let airbreakEnabled = false;
+    let airbreakEnabled = false;        // Whether currently flying
     let airbreakConfigured = false;
+    let airbreakShiftAllowed = false;   // Whether RShift can toggle airbreak
     let playerMatrixAddr = 0;
     let flySpeed = 2.0;
     let keysPressed = { w: false, s: false, a: false, d: false, space: false, shift: false };
@@ -1048,17 +1132,51 @@
     let moveSpeedAddr = 0;  // MoveSpeed X address (Y at +4, Z at +8)
     let lockedZ = 0;        // Locked Z value when airbreak enabled
     let lockedHealth = 100; // Locked health value
+    let godModeEnabled = false;
+    let moneyAddr = 0;      // Money address
     
-    function setupAirbreak() {
-        const healthAddrStr = document.getElementById('ce-health-addr').value;
-        healthAddr = parseInt(healthAddrStr, 16);
+    // Static addresses for GTA VC
+    // Money handle: EN=0x361c50, RU=0x361c60
+    // PED_ADDR = read_I32(money_handle - 0xA0)
+    // HEALTH = PED_ADDR + 0x350
+    function getStaticAddresses() {
         const view = getView();
         const bufLen = view.buffer.byteLength;
         
-        if (isNaN(healthAddr) || healthAddr < 0x400 || healthAddr >= bufLen) {
-            document.getElementById('ce-airbreak-status').textContent = 'Invalid health address';
-            return;
+        // Detect language and get money handle address
+        const isRu = typeof currentLanguage !== 'undefined' && currentLanguage === 'ru';
+        const moneyHandleAddr = isRu ? 0x361c60 : 0x361c50;
+        
+        if (moneyHandleAddr >= bufLen - 4) return null;
+        
+        // Money is at moneyHandleAddr
+        moneyAddr = moneyHandleAddr;
+        
+        // PED_ADDR = read_I32(money_handle - 0xA0)
+        const pedPtrAddr = moneyHandleAddr - 0xA0;
+        if (pedPtrAddr < 0 || pedPtrAddr >= bufLen - 4) return null;
+        
+        const pedAddr = view.getInt32(pedPtrAddr, true);
+        if (pedAddr <= 0 || pedAddr >= bufLen - 0x400) return null;
+        
+        // Health = PED_ADDR + 0x350
+        const hpAddr = pedAddr + 0x350;
+        if (hpAddr < 0 || hpAddr >= bufLen - 4) return null;
+        
+        return { pedAddr, healthAddr: hpAddr, moneyAddr: moneyHandleAddr };
+    }
+    
+    function setupAirbreak() {
+        const addrs = getStaticAddresses();
+        if (!addrs) {
+            document.getElementById('ce-airbreak-status').textContent = 'Failed to find addresses';
+            document.getElementById('ce-airbreak-status').style.color = '#f00';
+            return false;
         }
+        
+        healthAddr = addrs.healthAddr;
+        const view = getView();
+        const bufLen = view.buffer.byteLength;
         
         // Calculate addresses:
         // Position: healthAddr - 0x354 + 0x04 + 0x34 = healthAddr - 0x31C
@@ -1120,6 +1238,134 @@
         airbreakConfigured = true;
         
         updatePositionDisplay();
+        return true;
+    }
+    
+    // Toggle GodMode
+    function toggleGodMode(e) {
+        const checkbox = document.getElementById('ce-toggle-godmode');
+        
+        // If triggered by event, use checkbox state
+        if (e && e.target === checkbox) {
+            godModeEnabled = checkbox.checked;
+        } else {
+            // If triggered programmatically, toggle and update checkbox
+            godModeEnabled = !godModeEnabled;
+            checkbox.checked = godModeEnabled;
+        }
+
+        const addrs = getStaticAddresses();
+        if (!addrs) {
+            document.getElementById('ce-airbreak-status').textContent = 'Failed to find HP address';
+            document.getElementById('ce-airbreak-status').style.color = '#f00';
+            // Revert if failed
+            if (godModeEnabled) {
+                godModeEnabled = false;
+                checkbox.checked = false;
+            }
+            return;
+        }
+        
+        // If disabling GodMode, reset HP from 999 to 100
+        if (!godModeEnabled) {
+            const view = getView();
+            try {
+                view.setFloat32(addrs.healthAddr, 100.0, true);
+            } catch(e) {}
+        }
+        
+        document.getElementById('ce-airbreak-status').textContent = godModeEnabled ? 'GodMode ON - Infinite HP' : 'GodMode OFF (HP reset to 100)';
+        document.getElementById('ce-airbreak-status').style.color = godModeEnabled ? '#0f0' : '#888';
+    }
+    
+    // GodMode tick - runs constantly to keep HP at max
+    function godModeTick() {
+        if (!godModeEnabled) return;
+        
+        const addrs = getStaticAddresses();
+        if (!addrs) return;
+        
+        const view = getView();
+        try {
+            view.setFloat32(addrs.healthAddr, 999.0, true);
+        } catch(e) {}
+    }
+    
+    // Add money
+    function addMoney() {
+        const addrs = getStaticAddresses();
+        if (!addrs) {
+            document.getElementById('ce-airbreak-status').textContent = 'Failed to find money address';
+            document.getElementById('ce-airbreak-status').style.color = '#f00';
+            return;
+        }
+        
+        const view = getView();
+        try {
+            const currentMoney = view.getInt32(addrs.moneyAddr, true);
+            view.setInt32(addrs.moneyAddr, currentMoney + 9999999, true);
+            document.getElementById('ce-airbreak-status').textContent = '+$9999999 added!';
+            document.getElementById('ce-airbreak-status').style.color = '#ffd700';
+        } catch(e) {
+            document.getElementById('ce-airbreak-status').textContent = 'Failed to add money';
+            document.getElementById('ce-airbreak-status').style.color = '#f00';
+        }
+    }
+    
+    // Toggle AirBrake availability (whether RShift can trigger it)
+    function toggleAirBrake(e) {
+        const checkbox = document.getElementById('ce-toggle-airbreak');
+        
+        // If triggered by event, use checkbox state
+        if (e && e.target === checkbox) {
+            airbreakShiftAllowed = checkbox.checked;
+        } else {
+            // If triggered programmatically, toggle and update checkbox
+            airbreakShiftAllowed = !airbreakShiftAllowed;
+            checkbox.checked = airbreakShiftAllowed;
+        }
+        
+        // If disabling, also stop flying
+        if (!airbreakShiftAllowed && airbreakEnabled) {
+            airbreakEnabled = false;
+            document.getElementById('ce-airbreak-status').textContent = 'AirBreak disabled';
+            document.getElementById('ce-airbreak-status').style.color = '#888';
+        } else if (airbreakShiftAllowed) {
+            // Setup if needed when enabling
+            if (!airbreakConfigured) {
+                setupAirbreak();
+            }
+            document.getElementById('ce-airbreak-status').textContent = 'AirBreak enabled (RShift to fly)';
+            document.getElementById('ce-airbreak-status').style.color = '#0f0';
+        } else {
+            document.getElementById('ce-airbreak-status').textContent = 'AirBreak disabled';
+            document.getElementById('ce-airbreak-status').style.color = '#888';
+        }
+    }
+    
+    // Toggle actual flying state (called by RShift)
+    function toggleFlying() {
+        if (!airbreakShiftAllowed) return false;
+        
+        if (!airbreakConfigured) {
+            if (!setupAirbreak()) {
+                return false;
+            }
+        }
+        
+        airbreakEnabled = !airbreakEnabled;
+        
+        if (airbreakEnabled) {
+            const view = getView();
+            lockedZ = view.getFloat32(positionAddr + 8, true);
+            lockedHealth = view.getFloat32(healthAddr, true);
+        }
+        
+        document.getElementById('ce-airbreak-status').textContent = airbreakEnabled ?
+            `FLYING! Z=${lockedZ.toFixed(1)}` : 'AirBreak enabled (RShift to fly)';
+        document.getElementById('ce-airbreak-status').style.color = airbreakEnabled ? '#ff0' : '#0f0';
+        
+        return true;
     }
     
     function updatePositionDisplay() {
@@ -1217,25 +1463,9 @@
     // Track movement keys for airbreak (works even when menu closed)
     window.addEventListener('keydown', (e) => {
         if (e.key === 'ShiftRight' || (e.key === 'Shift' && e.location === 2)) {
-            // Right Shift - toggle airbreak
-            if (airbreakConfigured) {
-                airbreakEnabled = !airbreakEnabled;
-                
-                if (airbreakEnabled) {
-                    // Capture current Z and HP when enabling
-                    const view = getView();
-                    lockedZ = view.getFloat32(positionAddr + 8, true);
-                    lockedHealth = view.getFloat32(healthAddr, true);
-                    console.log(`[AirBreak] ENABLED - Locked Z=${lockedZ.toFixed(2)}, HP=${lockedHealth.toFixed(2)}`);
-                }
-                
-                document.getElementById('ce-airbreak-status').textContent =
-                    airbreakEnabled ?
-                    `FLYING! Z=${lockedZ.toFixed(1)} HP=${lockedHealth.toFixed(0)}` :
-                    `Ready! [RShift to fly]`;
-                document.getElementById('ce-airbreak-status').style.color = airbreakEnabled ? '#ff0' : '#0f0';
-                console.log('[AirBreak]', airbreakEnabled ? 'ENABLED' : 'DISABLED');
-            }
+            // Right Shift - toggle flying only if airbreak is allowed
+            if (!airbreakShiftAllowed) return;
+            toggleFlying();
             return;
         }
         
@@ -1263,10 +1493,13 @@
     
     // AirBreak update loop
     setInterval(airbreakTick, 16); // ~60fps
+    setInterval(godModeTick, 100); // GodMode tick
     setInterval(updatePositionDisplay, 100);
     
-    // Setup button handler
-    document.getElementById('ce-setup-airbreak').onclick = setupAirbreak;
+    // Toggle button handlers
+    document.getElementById('ce-toggle-airbreak').onchange = toggleAirBrake;
+    document.getElementById('ce-toggle-godmode').onchange = toggleGodMode;
+    document.getElementById('ce-add-money').onclick = addMoney;
     document.getElementById('ce-fly-speed').onchange = () => {
         flySpeed = parseFloat(document.getElementById('ce-fly-speed').value) || 2.0;
     };
@@ -1288,7 +1521,15 @@
         
         // Update visibility of touch controls based on airbreak state
         function updateTouchControlsVisibility() {
-            if (airbreakConfigured && airbreakEnabled) {
+            // Hide all touch controls when menu is open
+            if (menuOpen) {
+                airbreakTouchControls.classList.remove('active');
+                verticalBtns.style.display = 'none';
+                flyToggleBtn.classList.remove('visible');
+                return;
+            }
+            
+            if (airbreakConfigured && airbreakEnabled && airbreakShiftAllowed) {
                 airbreakTouchControls.classList.add('active');
                 verticalBtns.style.display = 'flex';
             } else {
@@ -1296,8 +1537,8 @@
                 verticalBtns.style.display = 'none';
             }
             
-            // Show fly toggle button when configured
-            if (airbreakConfigured) {
+            // Show fly toggle button only when airbreak is allowed (toggle is ON)
+            if (airbreakConfigured && airbreakShiftAllowed) {
                 flyToggleBtn.classList.add('visible');
                 flyToggleBtn.classList.toggle('active', airbreakEnabled);
                 flyToggleBtn.textContent = airbreakEnabled ? 'STOP' : 'FLY';
@@ -1497,14 +1738,6 @@
         downBtn.addEventListener('touchcancel', () => {
             keysPressed.shift = false;
         });
-        
-        // Monitor airbreak state changes
-        const originalSetupAirbreak = setupAirbreak;
-        setupAirbreak = function() {
-            originalSetupAirbreak();
-            updateTouchControlsVisibility();
-        };
-        document.getElementById('ce-setup-airbreak').onclick = setupAirbreak;
         
         // Update controls visibility periodically
         setInterval(updateTouchControlsVisibility, 500);

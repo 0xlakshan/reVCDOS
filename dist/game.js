@@ -16,7 +16,7 @@ const configurableMode = params.get('configurable') === "1";
 
 // Settings that can be configured via URL or UI
 let autoFullScreen = params.get('fullscreen') !== "0";
-let cheatsEnabled = params.get('cheats') === "1";
+let cheatsEnabled = params.get('cheats') === "1" || configurableMode;
 let maxFPS = parseInt(params.get('max_fps')) || 0;
 
 // full game access
